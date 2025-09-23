@@ -123,14 +123,14 @@ graph TB
    ```json
    {
      "mcpServers": {
-       "tradingview": {
-         "command": "/path/to/mcp-tradingview-server/.venv/bin/python",
-         "args": ["/path/to/mcp-tradingview-server/src/tradingview_server.py"],
-         "cwd": "/path/to/mcp-tradingview-server"
-       }
-     }
-   }
-   ```
+     "tradingview": {
+        "command": "/path/to/mcp-tradingview-server/.venv/bin/python",
+        "args": ["/path/to/mcp-tradingview-server/tradingview_server.py"],
+        "cwd": "/path/to/mcp-tradingview-server"
+      }
+    }
+  }
+  ```
 
    **Important**: 
    - Replace `/path/to/mcp-tradingview-server` with the ABSOLUTE path to this project
@@ -141,14 +141,14 @@ graph TB
    ```json
    {
      "mcpServers": {
-       "tradingview": {
-         "command": "/Users/username/.local/bin/uv",
-         "args": ["run", "python", "-m", "tradingview_server"],
-         "cwd": "/path/to/mcp-tradingview-server/src"
-       }
-     }
-   }
-   ```
+      "tradingview": {
+        "command": "/Users/username/.local/bin/uv",
+        "args": ["run", "python", "-m", "tradingview_server"],
+        "cwd": "/path/to/mcp-tradingview-server"
+      }
+    }
+  }
+  ```
    
    **Note**: You must use the full path to uv (find it with `which uv` in terminal)
 
@@ -374,6 +374,29 @@ result = await get_historical_data(
 )
 ```
 
+## SSE Transport with FastMCP 2
+
+The server now relies on [FastMCP v2](https://gofastmcp.com) for runtime transports. Running in SSE mode exposes the canonical MCP `/sse` and `/messages/` endpoints so MCP-aware clients can connect directly.
+
+### Local development
+
+```bash
+# Run the server over SSE (FastMCP reads FASTMCP_* env vars as defaults)
+uv run mcp-tradingview --transport sse --host 0.0.0.0 --port 8000
+
+# Optional: verify the stream handshake
+curl -N http://localhost:8000/sse
+```
+
+### Docker deployment
+
+```bash
+docker build -t tradingview-sse .
+docker run -d --name tradingview-sse -p 8000:8000 tradingview-sse
+```
+
+Ideally place a reverse proxy (nginx, Caddy, Traefik, etc.) in front of the container and map it to `https://sse.privatelab.eu`. Keep the upstream connection on HTTP/1.1, disable response buffering, and forward `X-Forwarded-*` headers so MCP clients can resolve absolute URLs.
+
 ## Claude AI Integration
 
 This MCP server includes a `CLAUDE.md` file that provides detailed documentation for Claude AI, including:
@@ -422,7 +445,7 @@ The server supports all exchanges available in TradingView, including:
    - Restart Claude Desktop after configuration changes
 
 4. **Permission errors**:
-   - Make sure the Python script is executable: `chmod +x src/tradingview_server.py`
+   - Make sure the Python script is executable: `chmod +x tradingview_server.py`
 
 ### Debug Mode
 

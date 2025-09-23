@@ -2,10 +2,13 @@
 """Test script for the MCP TradingView server."""
 
 import asyncio
-import sys
-sys.path.append('src')
 
-from tradingview_server import get_indicators, get_specific_indicators, get_indicator_resource, get_historical_data
+from tradingview_server import (
+    get_historical_data,
+    get_indicator_resource,
+    get_indicators,
+    get_specific_indicators,
+)
 
 
 async def test_server():

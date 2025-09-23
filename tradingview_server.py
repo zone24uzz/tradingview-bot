@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
 """MCP server for TradingView indicators using tradingview_scraper."""
 
-import asyncio
-import json
+import argparse
 import logging
-import sys
+import os
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Add the src directory to Python path if not already there
-src_dir = Path(__file__).parent
-if str(src_dir) not in sys.path:
-    sys.path.insert(0, str(src_dir))
-
-from mcp import Resource, Tool
-from mcp.server.fastmcp import FastMCP
-from mcp.types import TextContent
+from fastmcp import FastMCP
 
 from tradingview_scraper.symbols.technicals import Indicators
 from tradingview_scraper.symbols.stream import Streamer
@@ -24,11 +15,11 @@ from tradingview_scraper.symbols.stream import Streamer
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize FastMCP server
-mcp = FastMCP("TradingView Indicators Server")
+# Initialize FastMCP server with a stable identifier Claude expects
+mcp = FastMCP("tradingview")
 
 
-@mcp.tool()
+@mcp.tool
 async def get_indicators(
     symbol: str,
     exchange: str = "BINANCE",
@@ -86,7 +77,7 @@ async def get_indicators(
         }
 
 
-@mcp.tool()
+@mcp.tool
 async def get_specific_indicators(
     symbol: str,
     indicators: List[str],
@@ -161,7 +152,7 @@ async def get_specific_indicators(
         }
 
 
-@mcp.tool()
+@mcp.tool
 async def get_historical_data(
     symbol: str,
     exchange: str = "BINANCE",
@@ -261,6 +252,43 @@ async def get_indicator_resource(symbol: str) -> str:
         return f"Error fetching indicators for {symbol}: {result['error']}"
 
 
+def main(argv: Optional[List[str]] = None) -> None:
+    """CLI entry point for running the FastMCP server."""
+
+    parser = argparse.ArgumentParser(description="Run the TradingView MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "http"],
+        default="stdio",
+        help="Transport to use (default: stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.getenv("FASTMCP_HOST", "0.0.0.0"),
+        help="Bind host for SSE/HTTP transports",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("FASTMCP_PORT", "8000")),
+        help="Bind port for SSE/HTTP transports",
+    )
+    parser.add_argument(
+        "--path",
+        default=os.getenv("FASTMCP_PATH", "/mcp"),
+        help="URL path when serving the HTTP transport",
+    )
+
+    args = parser.parse_args(argv)
+
+    if args.transport == "sse":
+        mcp.run(transport="sse", host=args.host, port=args.port)
+    elif args.transport == "http":
+        mcp.run(transport="http", host=args.host, port=args.port, path=args.path)
+    else:
+        mcp.run()
+
+
 # Run the server
 if __name__ == "__main__":
-    mcp.run()
+    main()
