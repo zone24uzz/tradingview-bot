@@ -1,6 +1,7 @@
 import asyncio
 import os
 import logging
+import requests
 from typing import Dict, Any
 
 from dotenv import load_dotenv
@@ -180,6 +181,64 @@ async def cmd_monitors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(get_text(chat_id, "change_lang").split()[0] + " 🛑 Stop", callback_data="stop_all_monitors")]]
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
+async def send_fear_and_greed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        r = requests.get('https://api.alternative.me/fng/').json()
+        value = int(r['data'][0]['value'])
+        
+        if value <= 25:
+            status_uz = "🔴 Qattiq Qo'rquv (Sotib olish uchun yaxshi imkoniyat)"
+            emoji = "😱"
+        elif value <= 45:
+            status_uz = "🟠 Qo'rquv (Odamlar xavotirda)"
+            emoji = "😨"
+        elif value <= 55:
+            status_uz = "🟡 Neytral (Bozor bir qarorga kelmagan)"
+            emoji = "😐"
+        elif value <= 75:
+            status_uz = "🟢 Ochko'zlik (Odamlar faol sotib olmoqda)"
+            emoji = "😏"
+        else:
+            status_uz = "🟢🟢 Qattiq Ochko'zlik (Bozor qizib ketgan, ehtiyot bo'ling!)"
+            emoji = "🤑"
+            
+        text = f"🧭 *Bozor Kayfiyati (Fear & Greed Index)*\n\n"
+        text += f"📊 *Indeks:* {value}/100 {emoji}\n"
+        text += f"Holat: {status_uz}\n\n"
+        text += "_Bu indeks kripto bozoridagi investorlar kayfiyatini bildiradi._"
+        
+        if update.callback_query:
+            await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"F&G xatosi: {e}")
+        if update.callback_query:
+            await update.callback_query.message.reply_text("Ma'lumot olishda xatolik yuz berdi!")
+
+async def send_top_gainers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        r = requests.get('https://api.binance.com/api/v3/ticker/24hr').json()
+        top = [x for x in r if x['symbol'].endswith('USDT') and 'UP' not in x['symbol'] and 'DOWN' not in x['symbol']]
+        top.sort(key=lambda x: float(x['priceChangePercent']), reverse=True)
+        
+        text = "🔥 *So'nggi 24 soat ichida eng ko'p o'sgan 5 ta Kriptovalyuta (Binance)*\n\n"
+        
+        for i, coin in enumerate(top[:5], 1):
+            symbol = coin['symbol'].replace('USDT', '')
+            percent = float(coin['priceChangePercent'])
+            price = float(coin['lastPrice'])
+            text += f"{i}. *{symbol}* : +{percent:.2f}% 📈 (Narxi: ${price:g})\n"
+            
+        if update.callback_query:
+            await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Top gainers xatosi: {e}")
+        if update.callback_query:
+            await update.callback_query.message.reply_text("Ma'lumot olishda xatolik yuz berdi!")
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = update.effective_chat.id
@@ -190,7 +249,10 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(get_text(chat_id, "crypto"), callback_data="cat_crypto")],
         [InlineKeyboardButton(get_text(chat_id, "forex"), callback_data="cat_forex")],
         [InlineKeyboardButton(get_text(chat_id, "stocks"), callback_data="cat_stocks")],
-        [InlineKeyboardButton(get_text(chat_id, "futures"), callback_data="cat_futures")]
+        [InlineKeyboardButton(get_text(chat_id, "futures"), callback_data="cat_futures")],
+        [InlineKeyboardButton("📊 Yangi tahlil", callback_data="new_analysis")],
+        [InlineKeyboardButton("🔥 Top 5 O'sayotganlar", callback_data="top_gainers"),
+         InlineKeyboardButton("🧭 Bozor kayfiyati", callback_data="fear_greed")]
     ]
     
     if monitoring_count > 0:
@@ -238,6 +300,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await context.bot.send_message(chat_id=chat_id, text="Tilni tanlang / Выберите язык:", reply_markup=InlineKeyboardMarkup(keyboard))
         
+    elif data == "fear_greed":
+        await send_fear_and_greed(update, context)
+        await show_main_menu(update, context)
+        
+    elif data == "top_gainers":
+        await send_top_gainers(update, context)
+        await show_main_menu(update, context)
+        
+    elif data == "new_analysis":
+        await query.message.reply_text("Qaysi juftlikni tahlil qilamiz? (Masalan: BTCUSDT, EURUSD, AAPL)")
+
     elif data == "view_monitors":
         await cmd_monitors(update, context)
         
