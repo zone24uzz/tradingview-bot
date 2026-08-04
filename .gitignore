@@ -187,4 +187,6 @@ Thumbs.db
 exports/
 logs/
 temp/
-trading_mentor_system_prompt.md
+trading_mentor_system_prompt.md.venv/
+.env
+__pycache__/
