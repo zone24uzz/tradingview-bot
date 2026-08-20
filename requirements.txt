@@ -69,8 +69,6 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-multipart==0.0.32
 python-telegram-bot==22.8
-pywin32==312
-pywin32-ctypes==0.2.3
 pyyaml==6.0.3
 referencing==0.37.0
 requests==2.32.4
