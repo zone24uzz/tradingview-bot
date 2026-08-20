@@ -47,7 +47,7 @@ keyring==25.7.0
 markdown-it-py==4.2.0
 markupsafe==3.0.3
 mcp==1.29.0
--e file:///D:/mcp-tradingview-server
+-e .
 mdurl==0.1.2
 more-itertools==11.1.0
 numpy==2.4.6
@@ -97,3 +97,4 @@ werkzeug==3.1.8
 youtube-transcript-api==1.2.4
 yt-dlp==2026.7.4
 zipp==4.1.0
+Flask-Cors

@@ -1,179 +1,259 @@
 import React, { useState, useEffect } from 'react';
-import WebApp from '@twa-dev/sdk';
-import { Activity, TrendingUp, TrendingDown, Clock, Search, RefreshCw, BarChart2 } from 'lucide-react';
 
-const CATEGORIES = {
-  crypto: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT'],
-  forex: ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD'],
-  stocks: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA'],
-};
+function App() {
+  const [stats, setStats] = useState({ users: 0, pro: 0, active_monitors: 0 });
+  const [users, setUsers] = useState({});
+  const [admins, setAdmins] = useState({});
+  const [newAdminId, setNewAdminId] = useState('');
+  const [newAdminName, setNewAdminName] = useState('');
+  
+  // Pravalar
+  const availablePermissions = ['broadcast', 'manage_users', 'manage_admins', 'view_stats'];
+  const [selectedPerms, setSelectedPerms] = useState([]);
 
-const EXCHANGES = {
-  crypto: "BINANCE",
-  forex: "FX",
-  stocks: "NASDAQ"
-};
-
-export default function App() {
-  const [activeTab, setActiveTab] = useState('crypto');
-  const [selectedAsset, setSelectedAsset] = useState(null);
-  const [assetData, setAssetData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  // Xabar yuborish
+  const [broadcastText, setBroadcastText] = useState('');
+  const [broadcastStatus, setBroadcastStatus] = useState('');
 
   useEffect(() => {
-    WebApp.ready();
-    WebApp.expand();
+    fetchStats();
+    fetchAdmins();
+    fetchUsers();
   }, []);
 
-  const fetchAssetData = async (symbol, category) => {
-    setLoading(true);
-    setError(null);
+  const fetchStats = async () => {
     try {
-      // In production, this would hit the actual TradingView API backend deployed on a public URL.
-      // For now, we mock it to show the beautiful UI, because browser might block localhost HTTP from HTTPS WebApp.
-      // Wait, we can fetch from ngrok if we had one. Let's mock a fast response for the WOW factor.
-      
-      await new Promise(resolve => setTimeout(resolve, 600)); // simulate network
-      
-      const mockPrice = (Math.random() * 1000 + 100).toFixed(2);
-      const mockRsi = (Math.random() * 100).toFixed(1);
-      const isUp = Math.random() > 0.5;
-      
-      setAssetData({
-        symbol,
-        price: mockPrice,
-        change: isUp ? "+2.4%" : "-1.2%",
-        isUp,
-        indicators: {
-          RSI: mockRsi,
-          MACD: isUp ? "Buy" : "Sell",
-          EMA20: (mockPrice * 0.99).toFixed(2)
-        }
+      const res = await fetch('http://localhost:8080/api/stats');
+      setStats(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchAdmins = async () => {
+    try {
+      const res = await fetch('http://localhost:8080/api/admins');
+      setAdmins(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchUsers = async () => {
+    try {
+      const res = await fetch('http://localhost:8080/api/users');
+      setUsers(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const togglePro = async (id, currentPro) => {
+    try {
+      await fetch(`http://localhost:8080/api/users/${id}/pro`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_pro: !currentPro })
       });
-    } catch (err) {
-      setError("Xatolik yuz berdi");
-    } finally {
-      setLoading(false);
+      fetchUsers();
+      fetchStats();
+    } catch (e) { console.error(e); }
+  };
+
+  const sendBroadcast = async () => {
+    if (!broadcastText.trim()) return;
+    setBroadcastStatus('Yuborilmoqda...');
+    try {
+      const res = await fetch('http://localhost:8080/api/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: broadcastText })
+      });
+      const data = await res.json();
+      if(data.success) {
+        setBroadcastStatus(`Muvaffaqiyatli! ${data.count} kishiga yuborildi.`);
+        setBroadcastText('');
+      } else {
+        setBroadcastStatus('Xatolik yuz berdi!');
+      }
+    } catch (e) { 
+      console.error(e); 
+      setBroadcastStatus('Xatolik yuz berdi!');
     }
   };
 
-  const handleSelectAsset = (symbol) => {
-    setSelectedAsset(symbol);
-    fetchAssetData(symbol, activeTab);
+  const addAdmin = async () => {
+    if (!newAdminId) return;
+    try {
+      await fetch('http://localhost:8080/api/admins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ admin_id: newAdminId, name: newAdminName, permissions: selectedPerms })
+      });
+      setNewAdminId('');
+      setNewAdminName('');
+      setSelectedPerms([]);
+      fetchAdmins();
+    } catch (e) { console.error(e); }
+  };
+
+  const removeAdmin = async (id) => {
+    try {
+      await fetch(`http://localhost:8080/api/admins/${id}`, { method: 'DELETE' });
+      fetchAdmins();
+    } catch (e) { console.error(e); }
+  };
+
+  const togglePerm = (perm) => {
+    if (selectedPerms.includes(perm)) setSelectedPerms(selectedPerms.filter(p => p !== perm));
+    else setSelectedPerms([...selectedPerms, perm]);
+  };
+
+  const loadForEdit = (id, data) => {
+    setNewAdminId(id);
+    setNewAdminName(data.name || '');
+    setSelectedPerms(data.permissions || []);
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-900 to-black text-white p-4 font-sans">
-      
-      <header className="flex justify-between items-center mb-6 pt-2">
-        <div>
-          <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
-            TradeSense AI
-          </h1>
-          <p className="text-gray-400 text-sm">Bozorni aqlli tahlil qiling</p>
-        </div>
-        <div className="bg-gray-800 p-2 rounded-full shadow-lg border border-gray-700">
-          <Activity className="text-emerald-400 w-6 h-6" />
-        </div>
-      </header>
+    <div className="min-h-screen bg-gray-900 text-white p-8">
+      <div className="max-w-5xl mx-auto">
+        <h1 className="text-4xl font-bold mb-8 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
+          TradingView Bot Admin Panel
+        </h1>
 
-      {/* Categories */}
-      <div className="flex space-x-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
-        {Object.keys(CATEGORIES).map(cat => (
-          <button
-            key={cat}
-            onClick={() => { setActiveTab(cat); setSelectedAsset(null); }}
-            className={`px-5 py-2.5 rounded-2xl whitespace-nowrap font-medium transition-all duration-300 ${
-              activeTab === cat 
-                ? 'bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.5)] text-white' 
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700 border border-gray-700'
-            }`}
-          >
-            {cat.charAt(0).toUpperCase() + cat.slice(1)}
-          </button>
-        ))}
-      </div>
-
-      {/* Main Content Area */}
-      {!selectedAsset ? (
-        <div className="grid grid-cols-2 gap-3">
-          {CATEGORIES[activeTab].map(symbol => (
-            <button
-              key={symbol}
-              onClick={() => handleSelectAsset(symbol)}
-              className="bg-gray-800/50 backdrop-blur-md border border-gray-700/50 rounded-2xl p-4 flex flex-col items-start justify-between hover:border-blue-500/50 hover:bg-gray-800 transition-all active:scale-95"
-            >
-              <span className="font-bold text-lg">{symbol}</span>
-              <div className="flex items-center text-xs text-gray-400 mt-2">
-                <BarChart2 className="w-3 h-3 mr-1" />
-                Tahlilni ko'rish
-              </div>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <button 
-            onClick={() => setSelectedAsset(null)}
-            className="text-blue-400 text-sm mb-4 flex items-center"
-          >
-            ← Ortga qaytish
-          </button>
-          
-          <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-6 border border-gray-700 shadow-2xl relative overflow-hidden">
-            {/* Glow effect */}
-            <div className={`absolute top-0 right-0 w-32 h-32 blur-3xl opacity-20 rounded-full ${assetData?.isUp ? 'bg-emerald-500' : 'bg-red-500'}`}></div>
-
-            <h2 className="text-3xl font-black mb-1 relative z-10">{selectedAsset}</h2>
-            
-            {loading ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <RefreshCw className="w-8 h-8 animate-spin text-blue-500 mb-4" />
-                <p className="text-gray-400">Bozor ma'lumotlari olinmoqda...</p>
-              </div>
-            ) : assetData ? (
-              <div className="relative z-10 mt-4">
-                <div className="flex items-baseline space-x-3 mb-6">
-                  <span className="text-4xl font-bold">${assetData.price}</span>
-                  <span className={`flex items-center text-sm font-medium px-2 py-1 rounded-full ${assetData.isUp ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
-                    {assetData.isUp ? <TrendingUp className="w-4 h-4 mr-1"/> : <TrendingDown className="w-4 h-4 mr-1"/>}
-                    {assetData.change}
-                  </span>
-                </div>
-
-                <div className="space-y-4">
-                  <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Texnik Indikatorlar</h3>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-black/40 rounded-2xl p-4 border border-gray-800">
-                      <div className="text-gray-400 text-xs mb-1">RSI (14)</div>
-                      <div className="text-xl font-bold">{assetData.indicators.RSI}</div>
-                      <div className="text-[10px] text-gray-500 mt-1">Nisbiy kuch</div>
-                    </div>
-                    
-                    <div className="bg-black/40 rounded-2xl p-4 border border-gray-800">
-                      <div className="text-gray-400 text-xs mb-1">MACD</div>
-                      <div className={`text-xl font-bold ${assetData.indicators.MACD === 'Buy' ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {assetData.indicators.MACD}
-                      </div>
-                      <div className="text-[10px] text-gray-500 mt-1">Trend holati</div>
-                    </div>
-                  </div>
-                </div>
-
-                <button 
-                  onClick={() => WebApp.sendData(JSON.stringify({action: 'monitor', symbol: selectedAsset}))}
-                  className="w-full mt-8 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold py-4 rounded-2xl shadow-[0_0_20px_rgba(79,70,229,0.4)] transition-all active:scale-95 flex items-center justify-center"
-                >
-                  <Activity className="w-5 h-5 mr-2" />
-                  Kuzatishni boshlash
-                </button>
-              </div>
-            ) : null}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg">
+            <h2 className="text-xl text-gray-400 mb-2">Foydalanuvchilar</h2>
+            <p className="text-4xl font-bold">{stats.users}</p>
+          </div>
+          <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg">
+            <h2 className="text-xl text-gray-400 mb-2">PRO A'zolar</h2>
+            <p className="text-4xl font-bold">{stats.pro}</p>
+          </div>
+          <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg">
+            <h2 className="text-xl text-gray-400 mb-2">Faol Monitoringlar</h2>
+            <p className="text-4xl font-bold">{stats.active_monitors}</p>
           </div>
         </div>
-      )}
+
+        <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg mb-8">
+          <h2 className="text-2xl font-bold mb-4 border-b border-gray-700 pb-2">📢 Ommaviy Xabar Yuborish</h2>
+          <textarea 
+            rows="4" 
+            placeholder="Xabar matnini kiriting (HTML teglar ishlatsangiz bo'ladi)..." 
+            className="w-full bg-gray-700 p-3 rounded text-white focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
+            value={broadcastText}
+            onChange={e => setBroadcastText(e.target.value)}
+          ></textarea>
+          <div className="flex items-center gap-4">
+            <button onClick={sendBroadcast} className="bg-green-600 hover:bg-green-500 px-6 py-2 rounded font-bold transition">
+              Barchaga Yuborish
+            </button>
+            <span className="text-sm text-gray-300">{broadcastStatus}</span>
+          </div>
+        </div>
+
+        <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg mb-8">
+          <h2 className="text-2xl font-bold mb-4 border-b border-gray-700 pb-2">👥 Foydalanuvchilar Boshqaruvi</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-gray-700">
+                  <th className="p-3">ID</th>
+                  <th className="p-3">Til</th>
+                  <th className="p-3">Kuzatuvlar (Monitoring)</th>
+                  <th className="p-3">PRO Status</th>
+                  <th className="p-3">Harakatlar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(users).map(([id, data]) => (
+                  <tr key={id} className="border-b border-gray-700 hover:bg-gray-750">
+                    <td className="p-3">{id}</td>
+                    <td className="p-3">{data.lang?.toUpperCase() || 'UZ'}</td>
+                    <td className="p-3">{Object.keys(data.monitoring || {}).length} ta</td>
+                    <td className="p-3">
+                      {data.is_pro ? (
+                        <span className="bg-yellow-500/20 text-yellow-500 px-2 py-1 rounded text-xs font-bold">PRO</span>
+                      ) : (
+                        <span className="bg-gray-600 px-2 py-1 rounded text-xs">Oddiy</span>
+                      )}
+                    </td>
+                    <td className="p-3">
+                      <button 
+                        onClick={() => togglePro(id, data.is_pro)}
+                        className={`px-3 py-1 rounded text-sm font-bold transition ${data.is_pro ? 'bg-red-600 hover:bg-red-500' : 'bg-blue-600 hover:bg-blue-500'}`}
+                      >
+                        {data.is_pro ? "PRO ni olish" : "PRO berish"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {Object.keys(users).length === 0 && <p className="text-gray-400 mt-4 text-center">Foydalanuvchilar yo'q.</p>}
+          </div>
+        </div>
+
+        <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg mb-8">
+          <h2 className="text-2xl font-bold mb-4 border-b border-gray-700 pb-2">Admin Boshqaruvi (Qo'shish / Tahrirlash)</h2>
+          <div className="flex flex-col md:flex-row gap-4 mb-4">
+            <input 
+              type="text" placeholder="Telegram ID (masalan: 8357557157)" 
+              className="bg-gray-700 p-3 rounded text-white flex-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value={newAdminId} onChange={e => setNewAdminId(e.target.value)}
+            />
+            <input 
+              type="text" placeholder="Ismi" 
+              className="bg-gray-700 p-3 rounded text-white flex-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value={newAdminName} onChange={e => setNewAdminName(e.target.value)}
+            />
+          </div>
+          
+          <h3 className="text-lg mb-2 text-gray-300">Ruxsatlar (Pravalar):</h3>
+          <div className="flex flex-wrap gap-3 mb-6">
+            {availablePermissions.map(p => (
+              <label key={p} className="flex items-center gap-2 bg-gray-700 px-4 py-2 rounded-lg cursor-pointer hover:bg-gray-600 transition">
+                <input type="checkbox" checked={selectedPerms.includes(p)} onChange={() => togglePerm(p)} className="w-4 h-4 text-blue-500 rounded focus:ring-blue-500" />
+                <span className="capitalize">{p.replace('_', ' ')}</span>
+              </label>
+            ))}
+          </div>
+          
+          <button onClick={addAdmin} className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 px-8 py-3 rounded-lg font-bold shadow-lg transition">
+            Saqlash
+          </button>
+        </div>
+
+        <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg">
+          <h2 className="text-2xl font-bold mb-4 border-b border-gray-700 pb-2">Boshqa Adminlar</h2>
+          {Object.keys(admins).length === 0 ? (
+            <p className="text-gray-400">Hech qanday qo'shimcha admin topilmadi.</p>
+          ) : (
+            <div className="space-y-4">
+              {Object.entries(admins).map(([id, data]) => (
+                <div key={id} className="bg-gray-700 p-5 rounded-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div>
+                    <h3 className="text-xl font-bold">{data.name} <span className="text-sm font-normal text-gray-400 ml-2">ID: {id}</span></h3>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {data.permissions && data.permissions.map(p => (
+                        <span key={p} className="bg-gray-800 border border-gray-600 text-xs px-3 py-1 rounded-full text-blue-400">
+                          {p.replace('_', ' ')}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex gap-2 w-full md:w-auto">
+                    <button onClick={() => loadForEdit(id, data)} className="flex-1 md:flex-none bg-gray-600 hover:bg-gray-500 px-4 py-2 rounded font-bold transition">
+                      Tahrirlash
+                    </button>
+                    <button onClick={() => removeAdmin(id)} className="flex-1 md:flex-none bg-red-600 hover:bg-red-500 px-4 py-2 rounded font-bold transition">
+                      O'chirish
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
+
+export default App;

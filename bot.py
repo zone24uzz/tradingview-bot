@@ -2,12 +2,14 @@ import asyncio
 import os
 import logging
 import requests
+import re
 from typing import Dict, Any
 
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
+    Application,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
@@ -17,8 +19,95 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from tradingview_server import get_indicators
+import httpx
 from keep_alive import keep_alive
+
+async def get_fast_indicators(symbol: str, exchange: str = "BINANCE", timeframe: str = "1m"):
+    try:
+        screener = "crypto"
+        if exchange == "FX_IDC":
+            screener = "forex"
+        elif exchange in ["NASDAQ", "AMEX"]:
+            screener = "america"
+            
+        url = f"https://scanner.tradingview.com/{screener}/scan"
+        ticker = f"{exchange}:{symbol}"
+        
+        tf_suffix = ""
+        if timeframe == "1m": tf_suffix = "|1"
+        elif timeframe == "5m": tf_suffix = "|5"
+        elif timeframe == "15m": tf_suffix = "|15"
+        elif timeframe == "30m": tf_suffix = "|30"
+        elif timeframe == "1h": tf_suffix = "|60"
+        elif timeframe == "4h": tf_suffix = "|240"
+        elif timeframe == "1d": tf_suffix = ""
+        elif timeframe == "1w": tf_suffix = "|1W"
+        elif timeframe == "1M": tf_suffix = "|1M"
+            
+        cols = [
+            f"close{tf_suffix}" if tf_suffix else "close",
+            f"RSI{tf_suffix}" if tf_suffix else "RSI",
+            f"MACD.macd{tf_suffix}" if tf_suffix else "MACD.macd",
+            f"Recommend.All{tf_suffix}" if tf_suffix else "Recommend.All"
+        ]
+        
+        payload = {
+            "symbols": {"tickers": [ticker]},
+            "columns": cols
+        }
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, json=payload, timeout=5.0)
+            data = resp.json()
+            
+        if not data.get("data"):
+            raise ValueError(f"No data returned for {ticker}")
+            
+        d = data["data"][0]["d"]
+        
+        close = d[0]
+        rsi = d[1]
+        macd = d[2]
+        rec_val = d[3]
+        
+        if rec_val is None:
+            rec_str = "NEUTRAL"
+        elif rec_val < -0.5:
+            rec_str = "STRONG_SELL"
+        elif rec_val < -0.1:
+            rec_str = "SELL"
+        elif rec_val <= 0.1:
+            rec_str = "NEUTRAL"
+        elif rec_val <= 0.5:
+            rec_str = "BUY"
+        else:
+            rec_str = "STRONG_BUY"
+            
+        indicators_data = {
+            "close": close,
+            "RSI": round(rsi, 2) if rsi is not None else "N/A",
+            "MACD.macd": round(macd, 5) if macd is not None else "N/A",
+            "Recommend.All": rec_str
+        }
+        
+        return {
+            "success": True,
+            "symbol": symbol,
+            "exchange": exchange,
+            "timeframe": timeframe,
+            "indicators": {"data": indicators_data}
+        }
+    except Exception as e:
+        import logging
+        logging.error(f"Error fetching indicators for {symbol}: {str(e)}")
+        return {
+            "success": False,
+            "symbol": symbol,
+            "exchange": exchange,
+            "timeframe": timeframe,
+            "error": str(e)
+        }
+
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -27,8 +116,9 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8843585945"))
 
-user_data_store = {}
+from db import user_data_store, admins, save_db
 
 LANGUAGES = {
     "uz": {
@@ -122,6 +212,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in user_data_store:
         user_data_store[chat_id] = {"lang": "uz", "monitoring": {}}
         
+    if chat_id == ADMIN_ID or str(chat_id) in admins:
+        user_data_store[chat_id]["is_pro"] = True
+        
     keyboard = [
         [
             InlineKeyboardButton("🇺🇿 O'zbekcha", callback_data="lang_uz"),
@@ -146,6 +239,9 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id not in user_data_store:
         user_data_store[chat_id] = {"lang": "uz", "monitoring": {}}
+        
+    if chat_id == ADMIN_ID or str(chat_id) in admins:
+        user_data_store[chat_id]["is_pro"] = True
     
     keyboard = [
         [InlineKeyboardButton(get_text(chat_id, "crypto"), callback_data="cat_crypto")],
@@ -295,6 +391,48 @@ async def send_main_coins(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if update.callback_query:
             await update.callback_query.message.reply_text("Ma'lumot olishda xatolik yuz berdi!")
 
+async def calculate_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float, coin1: str, coin2: str):
+    try:
+        usd_to_uzs = 12600
+        try:
+            r = requests.get("https://cbu.uz/uz/arkhiv-kursov-valyut/json/").json()
+            for val in r:
+                if val['Ccy'] == 'USD':
+                    usd_to_uzs = float(val['Rate'])
+                    break
+        except:
+            pass
+
+        def get_usd_price(coin):
+            if coin == 'USDT' or coin == 'USD': return 1.0
+            if coin == 'UZS': return 1.0 / usd_to_uzs
+            try:
+                r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={coin}USDT").json()
+                if 'price' in r: return float(r['price'])
+            except:
+                pass
+            return None
+
+        price1 = get_usd_price(coin1)
+        price2 = get_usd_price(coin2)
+
+        if not price1 or not price2:
+            await update.message.reply_text(f"❌ Kechirasiz, {coin1} yoki {coin2} narxini topa olmadim.")
+            return
+
+        total_usd = amount * price1
+        result = total_usd / price2
+
+        text = f"💱 *Kalkulyator Natijasi:*\n\n"
+        text += f"{amount:,.4f} {coin1} = *{result:,.4f} {coin2}*\n\n"
+        text += f"_(1 {coin1} = {price1/price2:,.4f} {coin2})_"
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    except Exception as e:
+        logger.error(f"Kalkulyator xatosi: {e}")
+        await update.message.reply_text("Ma'lumotlarni hisoblashda xatolik yuz berdi.")
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = update.effective_chat.id
@@ -311,6 +449,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("📉 Top 5 Tushayotganlar", callback_data="top_losers")],
         [InlineKeyboardButton("💎 Asosiy tangalar", callback_data="main_coins"),
          InlineKeyboardButton("🧭 Bozor kayfiyati", callback_data="fear_greed")],
+        [InlineKeyboardButton("💱 Kripto Kalkulyator", callback_data="calculator")],
         [InlineKeyboardButton("🌟 PRO Versiya (Signallar va AI)", callback_data="buy_pro")]
     ]
     
@@ -340,6 +479,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if chat_id not in user_data_store:
         user_data_store[chat_id] = {"lang": "uz", "monitoring": {}}
+        
+    if chat_id == ADMIN_ID or str(chat_id) in admins:
+        user_data_store[chat_id]["is_pro"] = True
     
     if data.startswith("lang_"):
         lang = data.split("_")[1]
@@ -375,11 +517,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_main_coins(update, context)
         await show_main_menu(update, context)
         
+    elif data == "calculator":
+        await query.message.reply_text("💱 Kripto-kalkulyatordan foydalanish uchun quyidagi formatda xabar yuboring:\n\n`MIG'DOR VALYUTA1 TO VALYUTA2`\n\nMisollar:\n`100 USDT to BTC`\n`1 BTC to UZS`\n`50 ETH to USDT`\n`1 TON to UZS`", parse_mode=ParseMode.MARKDOWN)
+        
     elif data == "new_analysis":
-        await query.message.reply_text("Qaysi juftlikni tahlil qilamiz? (Masalan: BTCUSDT, EURUSD, AAPL)")
+        keyboard = [
+            [InlineKeyboardButton(get_text(chat_id, "crypto"), callback_data="cat_crypto"),
+             InlineKeyboardButton(get_text(chat_id, "forex"), callback_data="cat_forex")],
+            [InlineKeyboardButton(get_text(chat_id, "stocks"), callback_data="cat_stocks"),
+             InlineKeyboardButton(get_text(chat_id, "futures"), callback_data="cat_futures")],
+            [InlineKeyboardButton("🔙 Orqaga / Назад", callback_data="back_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.edit_text("Qaysi bozorni tahlil qilamiz? Kategoriyani tanlang:", reply_markup=reply_markup)
 
     elif data == "buy_pro":
         chat_id = update.effective_chat.id
+        if chat_id not in user_data_store:
+            user_data_store[chat_id] = {"lang": "uz", "monitoring": {}}
+        if chat_id == ADMIN_ID or str(chat_id) in admins:
+            user_data_store[chat_id]["is_pro"] = True
+            
+        if user_data_store[chat_id].get("is_pro", False):
+            await query.answer("🎉 Sizda allaqachon PRO versiya faol! Barcha imkoniyatlardan bemalol foydalanishingiz mumkin.", show_alert=True)
+            return
+
         title = "🌟 PRO Versiya (1 Oylik)"
         description = (
             "PRO versiyada siz quyidagilarga ega bo'lasiz:\n\n"
@@ -453,7 +615,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         thinking_msg = await context.bot.send_message(chat_id=chat_id, text=thinking_text)
         exchange = EXCHANGES.get(symbol, "BINANCE" if "USDT" in symbol else "")
-        result = await get_indicators(symbol=symbol, exchange=exchange, timeframe="1m")
+        result = await get_fast_indicators(symbol=symbol, exchange=exchange, timeframe="1m")
         
         if result.get("success"):
             indicators = result.get("indicators", {}).get("data", {})
@@ -501,15 +663,91 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
 
+    elif data == "admin_stats":
+        if chat_id != ADMIN_ID and str(chat_id) not in admins: return
+        users = len(user_data_store)
+        pro = sum(1 for d in user_data_store.values() if d.get("is_pro"))
+        langs = {"uz": 0, "ru": 0}
+        for d in user_data_store.values():
+            langs[d.get("lang", "uz")] += 1
+        stat_text = (
+            f"📊 <b>Batafsil Statistika</b>\n\n"
+            f"Jami a'zolar: {users}\n"
+            f"PRO a'zolar: {pro}\n"
+            f"O'zbek tili: {langs['uz']} | Rus tili: {langs['ru']}\n"
+        )
+        await query.message.edit_text(stat_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="admin_back")]]))
+
+    elif data == "admin_broadcast":
+        if chat_id != ADMIN_ID and str(chat_id) not in admins: return
+        user_data_store[chat_id]["awaiting_broadcast"] = True
+        await query.message.edit_text("📢 Xabaringizni yuboring. Barcha foydalanuvchilarga yetkaziladi!\n\nBekor qilish uchun /cancel deb yozing.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Orqaga", callback_data="admin_back")]]))
+
+    elif data == "admin_close":
+        if chat_id != ADMIN_ID and str(chat_id) not in admins: return
+        await query.message.delete()
+        
+    elif data == "admin_back":
+        if chat_id != ADMIN_ID and str(chat_id) not in admins: return
+        users = len(user_data_store)
+        pro = sum(1 for d in user_data_store.values() if d.get("is_pro"))
+        active = sum(len(d.get("monitoring", {})) for d in user_data_store.values())
+        text = (
+            f"👑 <b>Admin Panel</b>\n\n"
+            f"👥 Barcha foydalanuvchilar: <b>{users}</b>\n"
+            f"🌟 PRO foydalanuvchilar: <b>{pro}</b>\n"
+            f"👀 Faol monitoringlar: <b>{active}</b>\n\n"
+            f"<i>Quyidagi menyudan kerakli harakatni tanlang:</i>"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📢 Hammaga xabar yuborish", callback_data="admin_broadcast")],
+            [InlineKeyboardButton("📊 Batafsil Statistika", callback_data="admin_stats")],
+            [InlineKeyboardButton("🔙 Yopish", callback_data="admin_close")]
+        ]
+        user_data_store[chat_id]["awaiting_broadcast"] = False
+        await query.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+
 async def handle_custom_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    symbol = update.message.text.upper().strip()
+    original_text = update.message.text
+    text = original_text.upper().strip()
     chat_id = update.effective_chat.id
+    
+    if user_data_store.get(chat_id, {}).get("awaiting_broadcast"):
+        if original_text.lower().strip() == "/cancel":
+            user_data_store[chat_id]["awaiting_broadcast"] = False
+            await update.message.reply_text("❌ Xabar yuborish bekor qilindi.")
+            return
+            
+        success = 0
+        for uid in user_data_store.keys():
+            try:
+                await context.bot.send_message(chat_id=uid, text=original_text, parse_mode=ParseMode.HTML)
+                success += 1
+            except:
+                pass
+        user_data_store[chat_id]["awaiting_broadcast"] = False
+        await update.message.reply_text(f"✅ Xabar {success} ta foydalanuvchiga yuborildi!")
+        return
+    
+    # Check if text is for calculator
+    match = re.match(r"([\d\.]+)\s*([A-Z]+)\s+TO\s+([A-Z]+)", text)
+    if match:
+        amount = float(match.group(1))
+        coin1 = match.group(2)
+        coin2 = match.group(3)
+        await calculate_crypto(update, context, amount, coin1, coin2)
+        return
+
+    symbol = text
     if chat_id not in user_data_store:
         user_data_store[chat_id] = {"lang": "uz", "monitoring": {}}
+        
+    if chat_id == ADMIN_ID or str(chat_id) in admins:
+        user_data_store[chat_id]["is_pro"] = True
     thinking_text = get_text(chat_id, "thinking")
     thinking_msg = await update.message.reply_text(thinking_text)
     exchange = EXCHANGES.get(symbol, "BINANCE" if "USDT" in symbol else "")
-    result = await get_indicators(symbol=symbol, exchange=exchange, timeframe="1m")
+    result = await get_fast_indicators(symbol=symbol, exchange=exchange, timeframe="1m")
     if result.get("success"):
         indicators = result.get("indicators", {}).get("data", {})
         price = indicators.get("close", "N/A")
@@ -532,12 +770,13 @@ async def handle_custom_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await thinking_msg.edit_text(get_text(chat_id, "error") + f"\n\nBunday aktiv topilmadi.", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def background_monitor(context: ContextTypes.DEFAULT_TYPE):
+    save_db()
     for chat_id, data in list(user_data_store.items()):
         monitoring = data.get("monitoring", {})
         for symbol, prev_state in list(monitoring.items()):
             try:
                 exchange = EXCHANGES.get(symbol, "BINANCE" if "USDT" in symbol else "")
-                result = await get_indicators(symbol=symbol, exchange=exchange, timeframe="1m")
+                result = await get_fast_indicators(symbol=symbol, exchange=exchange, timeframe="1m")
                 if result.get("success"):
                     indicators = result.get("indicators", {}).get("data", {})
                     current_price = str(indicators.get("close", "N/A"))
@@ -558,18 +797,167 @@ async def background_monitor(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Monitoring error for {symbol}: {e}")
 
+async def show_category_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
+    chat_id = update.effective_chat.id
+    symbols = ASSETS.get(category, [])
+    keyboard = []
+    row = []
+    for sym in symbols:
+        row.append(InlineKeyboardButton(sym, callback_data=f"analyze_{sym}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Orqaga / Назад", callback_data="back_main")])
+    text = get_text(chat_id, "select_asset")
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def cmd_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_category_cmd(update, context, "crypto")
+
+async def cmd_forex(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_category_cmd(update, context, "forex")
+
+async def cmd_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_category_cmd(update, context, "stocks")
+
+async def cmd_futures(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_category_cmd(update, context, "futures")
+
+async def cmd_calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("💱 Kripto-kalkulyatordan foydalanish uchun quyidagi formatda xabar yuboring:\n\n`MIG'DOR VALYUTA1 TO VALYUTA2`\n\nMisollar:\n`100 USDT to BTC`\n`1 BTC to UZS`\n`50 ETH to USDT`\n`1 TON to UZS`", parse_mode=ParseMode.MARKDOWN)
+
+async def cmd_pro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in user_data_store:
+        user_data_store[chat_id] = {"lang": "uz", "monitoring": {}}
+    if chat_id == ADMIN_ID or str(chat_id) in admins:
+        user_data_store[chat_id]["is_pro"] = True
+        
+    if user_data_store[chat_id].get("is_pro", False):
+        await update.message.reply_text("🎉 Sizda allaqachon PRO versiya faol! Barcha imkoniyatlardan bemalol foydalanishingiz mumkin.")
+        return
+
+    title = "🌟 PRO Versiya (1 Oylik)"
+    description = (
+        "PRO versiyada siz quyidagilarga ega bo'lasiz:\n\n"
+        "🤖 AI tahlil: Aniq 'Sotib olish' yoki 'Sotish' xulosalari.\n"
+        "📈 Cheksiz monitoring: Bir vaqtning o'zida 10 tagacha tangani kuzatish.\n"
+        "⚡️ VIP Signallar va reklamasiz ishlash."
+    )
+    payload = "pro_subscription_payload"
+    currency = "XTR"
+    price = 50
+    prices = [LabeledPrice("PRO Versiya", price)]
+    
+    await context.bot.send_invoice(
+        chat_id=chat_id,
+        title=title,
+        description=description,
+        payload=payload,
+        provider_token="",
+        currency=currency,
+        prices=prices
+    )
+
+async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Tahlil qilish uchun juftlik nomini yozing. Masalan: /analyze BTCUSDT")
+        return
+    
+    symbol = context.args[0].upper()
+    chat_id = update.effective_chat.id
+    if chat_id not in user_data_store:
+        user_data_store[chat_id] = {"lang": "uz", "monitoring": {}}
+        
+    thinking_text = get_text(chat_id, "thinking")
+    thinking_msg = await update.message.reply_text(thinking_text)
+    exchange = EXCHANGES.get(symbol, "BINANCE" if "USDT" in symbol else "")
+    result = await get_fast_indicators(symbol=symbol, exchange=exchange, timeframe="1m")
+    if result.get("success"):
+        indicators = result.get("indicators", {}).get("data", {})
+        price = indicators.get("close", "N/A")
+        rsi = indicators.get("RSI", "N/A")
+        macd = indicators.get("MACD.macd", "N/A")
+        recommendation = indicators.get("Recommend.All", "N/A")
+        inds_text = f"• RSI: <code>{rsi}</code>\n• MACD: <code>{macd}</code>\n• Tavsiya: <b>{recommendation}</b>"
+        final_text = get_text(chat_id, "analysis_result", symbol=symbol, price=price, indicators=inds_text)
+        
+        keyboard = [
+            [InlineKeyboardButton(get_text(chat_id, "start_monitor"), callback_data=f"monitor_{symbol}")],
+            [InlineKeyboardButton("🤖 AI Tahlil (PRO)", callback_data="ai_analysis")],
+            [InlineKeyboardButton("🔙 Bosh menyu / Главное меню", callback_data="back_main")]
+        ]
+        
+        await thinking_msg.edit_text(final_text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        keyboard = [[InlineKeyboardButton("🔙 Bosh menyu / Главное меню", callback_data="back_main")]]
+        await thinking_msg.edit_text(get_text(chat_id, "error") + f"\n\nBunday aktiv topilmadi.", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    logger.info(f"Admin command called by chat_id: {chat_id}. ADMIN_ID is {ADMIN_ID}")
+    if chat_id != ADMIN_ID and str(chat_id) not in admins:
+        await update.message.reply_text(f"❌ Kechirasiz, siz admin emassiz!\nSizning ID raqamingiz: `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
+        return
+        
+    total_users = len(user_data_store)
+    pro_users = sum(1 for data in user_data_store.values() if data.get("is_pro"))
+    active_monitors = sum(len(data.get("monitoring", {})) for data in user_data_store.values())
+    
+    text = (
+        f"👑 <b>Admin Panel</b>\n\n"
+        f"👥 Barcha foydalanuvchilar: <b>{total_users}</b>\n"
+        f"🌟 PRO foydalanuvchilar: <b>{pro_users}</b>\n"
+        f"👀 Faol monitoringlar: <b>{active_monitors}</b>\n\n"
+        f"<i>Quyidagi menyudan kerakli harakatni tanlang:</i>"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("📢 Hammaga xabar yuborish", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("📊 Batafsil Statistika", callback_data="admin_stats")],
+        [InlineKeyboardButton("🔙 Yopish", callback_data="admin_close")]
+    ]
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def post_init(application: Application):
+    commands = [
+        BotCommand("start", "Botni ishga tushirish"),
+        BotCommand("menu", "Asosiy menyu"),
+        BotCommand("crypto", "Kriptovalyutalar"),
+        BotCommand("forex", "Valyuta juftliklari"),
+        BotCommand("stocks", "Aksiyalar"),
+        BotCommand("futures", "Fyucherslar"),
+        BotCommand("analyze", "Tezkor tahlil (misol: /analyze BTCUSDT)"),
+        BotCommand("calc", "Kripto-kalkulyator"),
+        BotCommand("monitors", "Aktiv monitoringlarni ko'rish"),
+        BotCommand("stop", "Barcha monitoringlarni to'xtatish"),
+        BotCommand("pro", "PRO versiya imkoniyatlari"),
+        BotCommand("help", "Yordam")
+    ]
+    await application.bot.set_my_commands(commands)
+
 def main():
     if not TELEGRAM_TOKEN:
         logger.error("TELEGRAM_TOKEN topilmadi!")
         return
         
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", cmd_menu))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("stop", cmd_stop))
     application.add_handler(CommandHandler("monitors", cmd_monitors))
+    application.add_handler(CommandHandler("admin", cmd_admin))
+    application.add_handler(CommandHandler("crypto", cmd_crypto))
+    application.add_handler(CommandHandler("forex", cmd_forex))
+    application.add_handler(CommandHandler("stocks", cmd_stocks))
+    application.add_handler(CommandHandler("futures", cmd_futures))
+    application.add_handler(CommandHandler("calc", cmd_calc))
+    application.add_handler(CommandHandler("pro", cmd_pro))
+    application.add_handler(CommandHandler("analyze", cmd_analyze))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_text))
     

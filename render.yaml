@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: tradingview-tg-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
